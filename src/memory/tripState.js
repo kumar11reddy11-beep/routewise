@@ -213,4 +213,35 @@ function getSummary() {
   return lines.join('\n');
 }
 
-module.exports = { load, save, get, set, addBooking, addDocument, getBookings, findBooking, getSummary };
+/**
+ * Persist the family's latest GPS position in the trip state.
+ * Used by the heartbeat and morning briefing to reference the last known
+ * location even between live-location updates.
+ *
+ * Only writes when there is already an active trip (tripId set).
+ * This prevents a GPS update from auto-creating a phantom trip.
+ *
+ * @param {number} lat       - Latitude
+ * @param {number} lon       - Longitude
+ * @param {number} timestamp - Unix ms timestamp
+ * @returns {object} Updated state (unchanged if no active trip)
+ */
+function updateCurrentLocation(lat, lon, timestamp) {
+  const state = load();
+
+  // Update location unconditionally (in memory)
+  state.currentLocation = { lat, lon, updatedAt: timestamp || Date.now() };
+
+  // Only persist when there is an active trip — avoids auto-creating a tripId
+  // via save(), which would cause the heartbeat to treat a no-trip state as active.
+  if (state.tripId) {
+    save(state);
+    logger.debug(`Current location updated: (${lat}, ${lon})`);
+  } else {
+    logger.debug(`Location received but no active trip — not persisting: (${lat}, ${lon})`);
+  }
+
+  return state;
+}
+
+module.exports = { load, save, get, set, addBooking, addDocument, getBookings, findBooking, getSummary, updateCurrentLocation };
