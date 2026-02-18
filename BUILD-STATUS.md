@@ -114,6 +114,138 @@ routewise/
 - [x] Real .env with credentials (not committed per .gitignore)
 - [x] Milestone 2-5 service stubs in place (maps, weather, flights, hotels)
 
-## Next: Milestone 2
+---
 
-GPS Tracking, State Machine & Schedule Engine — requires Google Maps API key confirmation and live Telegram location sharing setup.
+---
+
+# Milestone 3 — On-Demand Intelligence
+
+**Built:** 2026-02-18
+**Node version:** v22.22.0
+
+---
+
+## Test Results
+
+```
+# tests 23
+# suites 1
+# pass 23
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms ~155ms
+```
+
+### All 23 tests passing ✅
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | buildMapsLink formats correctly | ✅ PASS |
+| 2 | estimateDetour calculates correctly (mocked drive times) | ✅ PASS |
+| 3a | checkFivePMTrigger: true after 5PM with no hotel | ✅ PASS |
+| 3b | checkFivePMTrigger: false before 5PM | ✅ PASS |
+| 3c | checkFivePMTrigger: false when hotel is booked tonight | ✅ PASS |
+| 4 | calculateDepartureWindow works backward from flight time | ✅ PASS |
+| 5a | calculateDelayImpact identifies soft goals to cut | ✅ PASS |
+| 5b | calculateDelayImpact protects hard commitments | ✅ PASS |
+| 5c | calculateDelayImpact with no delay: no-op | ✅ PASS |
+| 6 | findDining returns 2–3 options | ✅ PASS |
+| 7 | findDining tight schedule includes takeout mention | ✅ PASS |
+| 8 | correlateNeeds bundles gas + food | ✅ PASS |
+| 9 | getFlightStatus parses mocked AeroDataBox response | ✅ PASS |
+| 10 | findNearestHospital: formatted response with maps link | ✅ PASS |
+| 11 | findHotels: positioning tradeoff note present | ✅ PASS |
+| 12a | findDining: under 200 words, ends with CTA | ✅ PASS |
+| 12b | findHotels: under 200 words | ✅ PASS |
+| 12c | getFlightStatus formatted: under 200 words | ✅ PASS |
+| 12d | calculateDelayImpact formatted: ends with CTA | ✅ PASS |
+| 12e | findNearestHospital formatted: under 200 words | ✅ PASS |
+| 12f | calculateDepartureWindow: ends with "Leave by" instruction | ✅ PASS |
+| B1 | isTight: detects schedule pressure correctly (bonus) | ✅ PASS |
+| B2 | buildMapsLink: handles negative coordinates (bonus) | ✅ PASS |
+
+---
+
+## What Was Built
+
+### Files Created / Updated
+
+```
+src/
+├── modules/intelligence/
+│   ├── index.js          ← Orchestrator: handleRequest, findFood, findGas,
+│   │                        findHotel, findNearestHospital, getFlightStatus,
+│   │                        correlateNeeds
+│   ├── routeSearch.js    ← Route-aware search corridor (PRD §8.1)
+│   │                        buildMapsLink, estimateDetour, searchAlongRoute
+│   ├── dining.js         ← Dining intelligence (PRD §8.2)
+│   │                        findDining, isTight, scheduleTradeoff
+│   ├── hotels.js         ← Hotel intelligence (PRD §8.3)
+│   │                        findHotels, checkFivePMTrigger
+│   ├── fuel.js           ← Fuel correlation (PRD §8.4)
+│   │                        findGas, updateFuelState
+│   ├── flights.js        ← Flight monitoring (PRD §8.7)
+│   │                        getFlightStatus, calculateDelayImpact,
+│   │                        calculateDepartureWindow
+│   └── safety.js         ← Safety queries (PRD §8.8)
+│                            findNearestHospital
+├── services/
+│   ├── maps.js           ← Updated: places() implemented (nearbysearch)
+│   │                        + distanceMatrix() added
+│   ├── hotels.js         ← Rewritten: apidojo-booking-v1.p.rapidapi.com
+│   │                        autocomplete(), searchByBbox(), searchNear()
+│   └── flights.js        ← Updated: gzip/deflate handling via zlib
+└── index.js              ← M3 intent routing added (steps 7a–7g)
+                             food/gas/hotel/hospital/flight patterns
+
+tests/m3/intelligence.test.js  ← 23 tests, all passing
+```
+
+### Architecture Notes
+
+**Route-Aware Search** (`routeSearch.js`):
+- Calls Google Directions API to get step end-points as waypoints
+- Samples every Nth waypoint (max 5 search points) to avoid API flooding
+- Searches Google Places API (nearbysearch) within 5 km of each waypoint
+- De-duplicates by `place_id`
+- Runs `estimateDetour` in parallel for all candidates (capped at 12)
+- Filters to detour budget (default 20 min), sorts by detour ASC then rating DESC
+
+**Detour Formula**: `detour = (current→stop + stop→dest) − (current→dest)` — extra minutes added to trip, can be ≤ 0 if stop is directly on route.
+
+**Hotel Intelligence** (`hotels.js`):
+- Uses `apidojo-booking-v1.p.rapidapi.com` with gzip via native HTTPS (not axios), matching the tested `hotel-search.js` pattern
+- Calculates drive time tonight (current→hotel) + drive time tomorrow (hotel→tomorrow's activity)
+- Positioning note: "X min closer to tomorrow's first stop" vs best option
+
+**Flight Departure Window** (`flights.js`):
+- Buffers: 90 min security + 30 min car rental return + 30 min shuttle + live drive time
+- Drive time fetched from Google Directions API; 60 min default if API unavailable
+
+**Correlated Needs** (`intelligence/index.js`):
+- Fetches food options first, passes their coords to fuel search as `nearbyStops`
+- `fuel.js` checks each gas station against nearby stops (within 0.25 mi) to flag correlations
+
+**Schedule Tightness** (`dining.js`):
+- `isTight()`: true if drift > 20 min OR < 1 hr to next hard commitment
+- Tight schedule → adds takeout/call-ahead advisory to dining response
+
+---
+
+## API Keys Required for Live Testing
+
+| Service | Status | Key Location |
+|---------|--------|-------------|
+| Google Maps (Directions, Places, Geocoding) | ✅ Key set | `GOOGLE_MAPS_API_KEY` in `.env` |
+| RapidAPI (AeroDataBox + Booking.com) | ✅ Key set | `RAPIDAPI_KEY` in `.env` |
+| WeatherAPI.com | ⚠️ Not set | `WEATHER_API_KEY` in `.env` — needed for M4 only |
+
+All M3 functions work with the keys already in `.env`. No new keys required for M3.
+
+---
+
+## Next: Milestone 4
+
+Proactive Alerts & Daily Rituals — heartbeat engine (15-min cron), alert triggers (drift, weather, 5PM hotel, flight delay), morning briefing at 6 AM, end-of-day recap, budget tracking.

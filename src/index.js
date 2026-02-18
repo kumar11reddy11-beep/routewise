@@ -2,9 +2,10 @@
 
 require('dotenv').config();
 
-const intake   = require('./modules/intake');
-const tracking = require('./modules/tracking');
-const logger   = require('./utils/logger');
+const intake        = require('./modules/intake');
+const tracking      = require('./modules/tracking');
+const intelligence  = require('./modules/intelligence');
+const logger        = require('./utils/logger');
 
 /**
  * RouteWise Main Message Router
@@ -12,17 +13,18 @@ const logger   = require('./utils/logger');
  * Routes incoming messages to the appropriate module based on intent.
  * This is the single entry point for all user messages.
  *
- * Intent routing order (M2 additions inserted before M1 fallbacks):
+ * Intent routing order:
  *   1. Location object present → handleLocationUpdate (GPS tick)
  *   2. Attachment present → handleDocument (M1)
- *   3. ETA/distance query → getETA
- *   4. Weather query → getWeatherForLocation
- *   5. Sunset/golden hour query → getSunsetInfo
- *   6. Deferred request → handleDeferredRequest
- *   7. Email check trigger → handleEmailCheck (M1)
- *   8. Trip briefing → handleTripBriefing (M1)
- *   9. General query → handleQuery (M1)
- *  10. Default → help message
+ *   3. ETA/distance query → getETA (M2)
+ *   4. Weather query → getWeatherForLocation (M2)
+ *   5. Sunset/golden hour query → getSunsetInfo (M2)
+ *   6. Deferred request → handleDeferredRequest (M2)
+ *   7. M3 on-demand intelligence (food/gas/hotel/hospital/flight)
+ *   8. Email check trigger → handleEmailCheck (M1)
+ *   9. Trip briefing → handleTripBriefing (M1)
+ *  10. General query → handleQuery (M1)
+ *  11. Default → help message
  */
 
 const INTENT_PATTERNS = {
@@ -37,6 +39,13 @@ const INTENT_PATTERNS = {
   sunsetQuery:  /\b(sunset|golden\s+hour|sunrise)\b/i,
   // "[thing] in [N] hour(s)/min(s)/minute(s)"
   deferredReq:  /\bin\s+(\d+)\s*(hour|hr|minute|min)s?\b/i,
+
+  // M3 on-demand intelligence
+  foodIntent:    /hungry|food|eat|pizza|restaurant|lunch|dinner|breakfast|cafe|coffee|burger|taco|seafood|sushi/i,
+  gasIntent:     /\bgas\b|fuel|fill\s*up|\btank\b|petrol/i,
+  hotelIntent:   /hotel|place\s+to\s+stay|where.*sleep|accommodation|lodge|motel|room\s+for\s+tonight/i,
+  hospitalIntent:/hospital|emergency|\bER\b|urgent\s+care|doctor|clinic|ambulance|hurt|injured/i,
+  flightIntent:  /flight.*status|is.*flight.*delayed|check.*flight|flight\s+[A-Z]{2}\d/i,
 };
 
 /**
@@ -193,22 +202,52 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
       }
     }
 
-    // ── 7. Email check ────────────────────────────────────────────────────────
+    // ── 7. M3 On-Demand Intelligence ─────────────────────────────────────────
+    //    Handles food, gas, hotel, hospital, flight status, and combined needs.
+    //    Fires before M1 query handler so specific intents take priority.
+    const isM3Intent = (
+      INTENT_PATTERNS.foodIntent.test(text)    ||
+      INTENT_PATTERNS.gasIntent.test(text)     ||
+      INTENT_PATTERNS.hotelIntent.test(text)   ||
+      INTENT_PATTERNS.hospitalIntent.test(text)||
+      INTENT_PATTERNS.flightIntent.test(text)
+    );
+
+    if (isM3Intent) {
+      const loc = tracking.getCurrentLocation();
+      const { load } = require('./memory/tripState');
+      const state = load();
+
+      // intelligence.handleRequest returns null if it can't handle the text
+      const m3Response = await intelligence.handleRequest(
+        text,
+        state,
+        loc.lat || null,
+        loc.lon || null
+      );
+
+      if (m3Response !== null) {
+        return m3Response;
+      }
+      // Fall through to M1/M2 if intelligence couldn't handle it
+    }
+
+    // ── 8. Email check ────────────────────────────────────────────────────────
     if (INTENT_PATTERNS.emailCheck.test(text)) {
       return await intake.handleEmailCheck();
     }
 
-    // ── 8. Trip briefing — multi-line plan starting with "Day 1" ─────────────
+    // ── 9. Trip briefing — multi-line plan starting with "Day 1" ─────────────
     if (INTENT_PATTERNS.tripBriefing.test(text)) {
       return await intake.handleTripBriefing(text);
     }
 
-    // ── 9. Query about stored trip data ───────────────────────────────────────
+    // ── 10. Query about stored trip data ──────────────────────────────────────
     if (INTENT_PATTERNS.query.test(text)) {
       return await intake.handleQuery(text);
     }
 
-    // ── 10. Default: help message ─────────────────────────────────────────────
+    // ── 11. Default: help message ─────────────────────────────────────────────
     return [
       "I didn't understand that. Here's what I can do:\n",
       '📍 **Share your live location** — I\'ll track activities automatically',
@@ -216,6 +255,11 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
       '🌤 **"Weather at [place]"** — current conditions',
       '🌅 **"When\'s sunset?"** — sunset + golden hour times',
       '⏰ **"[thing] in [N] hours/mins"** — set a deferred reminder',
+      '🍕 **"Find pizza on the way"** — dining along your route',
+      '⛽ **"Need gas"** — gas stations on-route',
+      '🏨 **"Find a hotel for tonight"** — next-day positioning included',
+      '🏥 **"Nearest hospital"** — emergency services info',
+      '✈️ **"Check flight DL1234"** — real-time flight status',
       '📬 **"Check your email"** — parse forwarded booking confirmations',
       '📅 **Send your trip briefing** — start with "Day 1..."',
       '🔍 **Ask about your trip** — confirmation numbers, flights, hotels, etc.',

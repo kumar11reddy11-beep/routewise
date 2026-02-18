@@ -8,7 +8,7 @@ const logger = require('../utils/logger');
  * RouteWise Google Maps Service
  *
  * Wraps Google Maps Platform APIs:
- *   - Directions API  (ETA, routing)
+ *   - Directions API  (ETA, routing, route waypoints)
  *   - Geocoding API   (address ↔ coordinates)
  *   - Places API      (nearby search — M3)
  *   - Distance Matrix (multi-destination comparison — M3)
@@ -21,7 +21,7 @@ function apiKey() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// M2 additions
+// M2 additions (retained + enhanced for M3)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -65,18 +65,54 @@ async function reverseGeocode(lat, lon) {
 }
 
 /**
- * Places API search — stub for M3. Returns empty array until implemented.
+ * Google Places Nearby Search API.
+ * Searches for places of a given type (or matching a keyword) within a radius.
  *
- * @param {string} query     - Search keyword (e.g. "pizza", "gas station")
- * @param {number} lat       - Center latitude
- * @param {number} lon       - Center longitude
- * @param {number} [radiusMeters=5000] - Search radius
- * @returns {Promise<object[]>} Place results (M3 implementation)
+ * @param {string} query       - Search keyword (e.g. "pizza", "gas station")
+ * @param {number} lat         - Center latitude
+ * @param {number} lon         - Center longitude
+ * @param {number} [radiusMeters=5000] - Search radius in meters (max 50000)
+ * @param {string} [type]      - Google place type (e.g. "restaurant", "gas_station", "hospital")
+ * @returns {Promise<object[]>} Array of Google Places results
  */
-async function places(query, lat, lon, radiusMeters = 5000) {
-  // M3 stub — full implementation in Milestone 3 (route-aware search)
-  logger.debug(`Places search (M3 stub): "${query}" near (${lat},${lon}) r=${radiusMeters}m`);
-  return [];
+async function places(query, lat, lon, radiusMeters = 5000, type = null) {
+  const params = {
+    location: `${lat},${lon}`,
+    radius:   radiusMeters,
+    key:      apiKey(),
+  };
+
+  if (type)  params.type    = type;
+  if (query) params.keyword = query;
+
+  const res = await axios.get(`${BASE_URL}/place/nearbysearch/json`, { params });
+  logger.debug(`Places: "${query}" (type=${type}) near (${lat},${lon}) r=${radiusMeters}m → ${(res.data.results || []).length} results`);
+  return res.data.results || [];
+}
+
+/**
+ * Distance Matrix API — compare drive times from one origin to multiple destinations.
+ * Returns raw API response.
+ *
+ * @param {number} originLat
+ * @param {number} originLon
+ * @param {Array<{lat: number, lon: number}>} destinations
+ * @returns {Promise<object>} Full Distance Matrix API JSON response
+ */
+async function distanceMatrix(originLat, originLon, destinations) {
+  const destStrings = destinations.map(d => `${d.lat},${d.lon}`);
+  const res = await axios.get(`${BASE_URL}/distancematrix/json`, {
+    params: {
+      origins:      `${originLat},${originLon}`,
+      destinations: destStrings.join('|'),
+      mode:         'driving',
+      key:          apiKey(),
+      departure_time: 'now',
+      traffic_model:  'best_guess',
+    },
+  });
+  logger.debug(`Distance matrix: (${originLat},${originLon}) → ${destinations.length} destinations`);
+  return res.data;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,7 +134,7 @@ async function getDirections(origin, destination) {
 }
 
 /**
- * Search for nearby places of a given type.
+ * Search for nearby places of a given type (M1 version — simpler interface).
  * @param {string} location - "lat,lng" for center of search
  * @param {string} type - Place type (restaurant, gas_station, lodging, etc.)
  * @param {number} [radiusMeters=5000] - Search radius
@@ -115,7 +151,7 @@ async function searchNearby(location, type, radiusMeters = 5000, keyword = '') {
 }
 
 /**
- * Compare driving times from one origin to multiple destinations.
+ * Compare driving times from one origin to multiple destinations (M1 version).
  * @param {string} origin - "lat,lng" or address
  * @param {string[]} destinations - Array of addresses or "lat,lng" strings
  * @returns {Promise<object>} Distance Matrix API response
@@ -158,10 +194,11 @@ function buildMapsLink(lat, lng) {
 }
 
 module.exports = {
-  // M2
+  // M3
   directions,
   reverseGeocode,
   places,
+  distanceMatrix,
   // M1 originals
   getDirections,
   searchNearby,
