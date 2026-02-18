@@ -7,108 +7,191 @@ const logger = require('../utils/logger');
 /**
  * RouteWise Weather Service
  *
- * Wraps WeatherAPI.com for current conditions, forecasts, and
- * astronomy data (sunrise, sunset, golden hour).
+ * Uses Google Weather API (weather.googleapis.com) for current conditions,
+ * forecasts, and astronomy data (sunrise, sunset, golden hour).
  *
- * M2 additions: current(lat, lon) and forecast(lat, lon, days)
- * with consistent return shapes consumed by the tracking/weather module.
+ * Same Google Maps API key as Directions/Places — no extra key needed.
+ *
+ * Endpoints:
+ *   GET /v1/currentConditions:lookup
+ *   GET /v1/forecast/days:lookup
+ *   GET /v1/forecast/hours:lookup
  */
 
-const BASE_URL = 'https://api.weatherapi.com/v1';
+const BASE_URL = 'https://weather.googleapis.com/v1';
 
 function apiKey() {
-  return config.weather.apiKey;
+  return config.googleMaps.apiKey;
+}
+
+const DEFAULT_PARAMS = {
+  unitsSystem: 'IMPERIAL',
+  languageCode: 'en-US',
+};
+
+/**
+ * Format ISO time string to readable "7:15 PM" format in local time.
+ * Google Weather API returns times in UTC with timezone offset info in the response.
+ */
+function formatTime(isoString) {
+  if (!isoString) return 'Unknown';
+  try {
+    // Parse the ISO string — it may include offset (e.g. "2026-02-18T07:15:00-08:00")
+    const date = new Date(isoString);
+    // If offset is embedded in the string, use it directly
+    const hasOffset = /[+-]\d{2}:\d{2}$/.test(isoString);
+    if (hasOffset) {
+      // Extract offset hours and manually adjust display
+      const offsetMatch = isoString.match(/([+-])(\d{2}):(\d{2})$/);
+      if (offsetMatch) {
+        const sign = offsetMatch[1] === '+' ? 1 : -1;
+        const offsetMinutes = sign * (parseInt(offsetMatch[2]) * 60 + parseInt(offsetMatch[3]));
+        const localMs = date.getTime() + offsetMinutes * 60 * 1000;
+        const localDate = new Date(localMs);
+        return localDate.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+          timeZone: 'UTC',
+        });
+      }
+    }
+    // Fallback: use system local time
+    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  } catch {
+    return isoString;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// M2 additions
+// Core — used by tracking/weather module
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Get current weather for a lat/lon position.
- * Returns the raw WeatherAPI current-weather object.
+ * Get current weather for a lat/lon.
+ * Returns normalized object used throughout RouteWise.
  *
  * @param {number} lat
  * @param {number} lon
- * @returns {Promise<object>} Raw WeatherAPI current weather response
+ * @returns {Promise<object>}
  */
 async function current(lat, lon) {
-  const q = `${lat},${lon}`;
-  const res = await axios.get(`${BASE_URL}/current.json`, {
-    params: { key: apiKey(), q, aqi: 'no' },
+  const res = await axios.get(`${BASE_URL}/currentConditions:lookup`, {
+    params: {
+      key: apiKey(),
+      'location.latitude': lat,
+      'location.longitude': lon,
+      ...DEFAULT_PARAMS,
+    },
   });
-  logger.debug(`Current weather fetched for: ${q}`);
-  return res.data;
+  const d = res.data;
+  logger.debug(`Current weather fetched for: ${lat},${lon} — ${d.weatherCondition?.description?.text}`);
+
+  return {
+    condition: d.weatherCondition?.description?.text || 'Unknown',
+    tempF: d.temperature?.degrees,
+    tempC: d.temperature ? Math.round((d.temperature.degrees - 32) * 5 / 9) : null,
+    feelsLikeF: d.feelsLikeTemperature?.degrees,
+    humidity: d.relativeHumidity,
+    windMph: d.wind?.speed?.value,
+    uvIndex: d.uvIndex,
+    isDaytime: d.isDaytime,
+    cloudCover: d.cloudCover,
+    thunderstormProbability: d.thunderstormProbability,
+    raw: d,
+  };
 }
 
 /**
- * Get forecast including astronomy (sunset, sunrise) for a lat/lon.
- * Needed by the tracking/weather module for golden hour calculation.
+ * Get daily forecast for a lat/lon.
+ * Includes sunrise/sunset from astronomy data.
  *
  * @param {number} lat
  * @param {number} lon
- * @param {number} [days=1] - Forecast days (1–3)
- * @returns {Promise<object>} Raw WeatherAPI forecast response
+ * @param {number} [days=1]
+ * @returns {Promise<object>}
  */
 async function forecast(lat, lon, days = 1) {
-  const q = `${lat},${lon}`;
-  const res = await axios.get(`${BASE_URL}/forecast.json`, {
-    params: { key: apiKey(), q, days, aqi: 'no', alerts: 'yes' },
+  const res = await axios.get(`${BASE_URL}/forecast/days:lookup`, {
+    params: {
+      key: apiKey(),
+      'location.latitude': lat,
+      'location.longitude': lon,
+      days,
+      ...DEFAULT_PARAMS,
+    },
   });
-  logger.debug(`Forecast (${days}d) + astronomy fetched for: ${q}`);
-  return res.data;
+  const d = res.data;
+  logger.debug(`Forecast (${days}d) fetched for: ${lat},${lon}`);
+
+  const forecastDays = (d.forecastDays || []).map(day => ({
+    date: day.interval?.startTime?.split('T')[0],
+    maxTempF: day.maxTemperature?.degrees,
+    minTempF: day.minTemperature?.degrees,
+    condition: day.daytimeForecast?.weatherCondition?.description?.text || day.weatherCondition?.description?.text,
+    sunrise: formatTime(day.sunEvents?.sunriseTime),
+    sunset: formatTime(day.sunEvents?.sunsetTime),
+    sunriseIso: day.sunEvents?.sunriseTime,
+    sunsetIso: day.sunEvents?.sunsetTime,
+    precipProbability: day.daytimeForecast?.precipitationProbability,
+    rain: day.daytimeForecast?.rain?.value,
+    snow: day.daytimeForecast?.snow?.value,
+  }));
+
+  return {
+    location: `${lat},${lon}`,
+    sunrise: forecastDays[0]?.sunrise,
+    sunset: forecastDays[0]?.sunset,
+    sunriseIso: forecastDays[0]?.sunriseIso,
+    sunsetIso: forecastDays[0]?.sunsetIso,
+    days: forecastDays,
+    raw: d,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// M1 originals — kept for backwards compatibility
+// Convenience wrappers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Get current weather conditions for a location.
- * @param {string} location - City name, US zip, or "lat,lng"
- * @returns {Promise<object>} WeatherAPI current weather object
- */
 async function getCurrent(location) {
-  const res = await axios.get(`${BASE_URL}/current.json`, {
-    params: { key: apiKey(), q: location },
-  });
-  logger.debug(`Current weather fetched for: ${location}`);
-  return res.data;
+  let lat, lon;
+  if (typeof location === 'string' && location.includes(',')) {
+    [lat, lon] = location.split(',').map(parseFloat);
+  } else {
+    // Geocode location name via Maps API
+    const maps = require('./maps');
+    const geo = await maps.geocode(location);
+    lat = geo.lat;
+    lon = geo.lng;
+  }
+  return current(lat, lon);
 }
 
-/**
- * Get forecast for up to 3 days ahead.
- * @param {string} location
- * @param {number} [days=1] - 1–3
- * @returns {Promise<object>} WeatherAPI forecast object
- */
 async function getForecast(location, days = 1) {
-  const res = await axios.get(`${BASE_URL}/forecast.json`, {
-    params: { key: apiKey(), q: location, days, aqi: 'no', alerts: 'yes' },
-  });
-  logger.debug(`Forecast (${days}d) fetched for: ${location}`);
-  return res.data;
+  let lat, lon;
+  if (typeof location === 'string' && location.includes(',')) {
+    [lat, lon] = location.split(',').map(parseFloat);
+  } else {
+    const maps = require('./maps');
+    const geo = await maps.geocode(location);
+    lat = geo.lat;
+    lon = geo.lng;
+  }
+  return forecast(lat, lon, days);
+}
+
+async function getAstronomy(location) {
+  const f = await getForecast(location, 1);
+  return {
+    sunrise: f.sunrise,
+    sunset: f.sunset,
+    sunriseIso: f.sunriseIso,
+    sunsetIso: f.sunsetIso,
+  };
 }
 
 /**
- * Get astronomy data (sunrise, sunset, moon phase) for a location and date.
- * @param {string} location
- * @param {string} [date] - YYYY-MM-DD format, defaults to today
- * @returns {Promise<object>} WeatherAPI astronomy object
- */
-async function getAstronomy(location, date) {
-  const dt = date || new Date().toISOString().split('T')[0];
-  const res = await axios.get(`${BASE_URL}/astronomy.json`, {
-    params: { key: apiKey(), q: location, dt },
-  });
-  logger.debug(`Astronomy data fetched for: ${location} on ${dt}`);
-  return res.data.astronomy?.astro || {};
-}
-
-/**
- * Calculate golden hour start time (~45 min before sunset).
- * @param {string} sunsetTime - Time string like "7:15 PM"
- * @returns {string} Golden hour start time string
+ * Calculate golden hour start (~45 min before sunset).
  */
 function goldenHourStart(sunsetTime) {
   try {
@@ -126,10 +209,8 @@ function goldenHourStart(sunsetTime) {
 }
 
 module.exports = {
-  // M2
   current,
   forecast,
-  // M1 originals
   getCurrent,
   getForecast,
   getAstronomy,
