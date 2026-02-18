@@ -10,22 +10,22 @@ RouteWise eliminates road trip decision fatigue by monitoring your real-time pos
 
 ```
 src/
-├── index.js              ← Message router (intent detection → module dispatch)
+├── index.js              ← Message router (intent detection → module dispatch + personality filter)
 ├── config/               ← Environment-based configuration (no hardcoded secrets)
 ├── services/             ← External API clients (Gmail, Maps, Weather, Flights, Hotels)
 ├── modules/
 │   ├── intake/           ← M1: Email parsing, trip briefing, document storage, queries
-│   ├── tracking/         ← M2: GPS state machine, ETA calculation (coming soon)
-│   ├── intelligence/     ← M3: Route-aware search, dining/hotel/fuel/flight logic (coming soon)
-│   ├── proactive/        ← M4: Heartbeat alerts, morning briefing, end-of-day recap (coming soon)
-│   └── patterns/         ← M5: Family behavior learning, preference adaptation (coming soon)
+│   ├── tracking/         ← M2: GPS state machine, ETA calculation, deferred requests
+│   ├── intelligence/     ← M3: Route-aware search, dining/hotel/fuel/flight logic
+│   ├── proactive/        ← M4: Heartbeat alerts, morning briefing, end-of-day recap
+│   └── patterns/         ← M5: Family behavior learning, personality, conflict resolver
 ├── memory/
-│   └── tripState.js      ← Persistent JSON trip state (bookings, itinerary, budget, docs)
+│   └── tripState.js      ← Persistent JSON trip state (bookings, itinerary, budget, docs, patterns)
 └── utils/
     └── logger.js         ← Leveled logger with [RouteWise] prefix
 ```
 
-**Data flow (M1):** User sends message → `src/index.js` detects intent → routes to `modules/intake` → parses emails or briefing → stores structured data in `trip-state.json` → returns human-readable confirmation.
+**Data flow:** User sends message → `src/index.js` detects intent → routes to correct module → response passes through `personality.formatMessage()` → returned to user. All pattern learning is stored in `tripState.patterns` and applied on the next relevant operation.
 
 ---
 
@@ -93,27 +93,43 @@ node src/index.js "What's our confirmation number?"
 ## Running Tests
 
 ```bash
-# Run the full M1 test suite
-npm test
-
-# Or directly
+# Run all milestone tests individually
 node --test tests/m1/intake.test.js
+node --test tests/m2/tracking.test.js
+node --test tests/m3/intelligence.test.js
+node --test tests/m4/proactive.test.js
+node --test tests/m5/patterns.test.js
+node --test tests/integration/e2e.test.js
 
-# Verbose output
-node --test --reporter spec tests/m1/intake.test.js
+# Or run all at once (chain with &&)
+node --test tests/m1/intake.test.js && \
+node --test tests/m2/tracking.test.js && \
+node --test tests/m3/intelligence.test.js && \
+node --test tests/m4/proactive.test.js && \
+node --test tests/m5/patterns.test.js && \
+node --test tests/integration/e2e.test.js
+
+# Verbose output (any single suite)
+node --test --reporter spec tests/m5/patterns.test.js
+
+# npm shortcut (runs M1 by default; update package.json for full suite)
+npm test
 ```
 
 ---
 
 ## Milestone Status
 
-| Milestone | Description | Status |
-|---|---|---|
-| **M1** | Trip Intake & Document Memory | ✅ Complete |
-| **M2** | GPS Tracking, State Machine & Schedule Engine | 🔜 Next |
-| **M3** | On-Demand Intelligence (route-aware search) | 🔜 Planned |
-| **M4** | Proactive Alerts & Daily Rituals | 🔜 Planned |
-| **M5** | Pattern Learning, Personality & Dry Run | 🔜 Planned |
+| Milestone | Description | Status | Tests |
+|---|---|---|---|
+| **M1** | Trip Intake & Document Memory | ✅ Complete | 8/8 |
+| **M2** | GPS Tracking, State Machine & Schedule Engine | ✅ Complete | 10/10 |
+| **M3** | On-Demand Intelligence (route-aware search) | ✅ Complete | 23/23 |
+| **M4** | Proactive Alerts & Daily Rituals | ✅ Complete | 13/13 |
+| **M5** | Pattern Learning, Personality & Integration | ✅ Complete | 10/10 |
+| **E2E** | End-to-End Integration | ✅ Complete | 10/10 |
+
+**Total: 74/74 tests passing ✅**
 
 **M1 covers:**
 - Gmail integration (fetch unread emails labeled `RouteWise`, parse bookings, mark as read)
@@ -122,6 +138,15 @@ node --test --reporter spec tests/m1/intake.test.js
 - Trip state persistence (load/save, nested get/set, booking search)
 - Document & photo storage references
 - On-demand queries ("what's our confirmation?", "when's our flight?", etc.)
+
+**M5 covers:**
+- Pattern learning: departure timing, food preference, activity pace (PRD §10, §19.3)
+- Dona personality enforcement: 200-word limit, ≤2 emoji, CTA required, no filler phrases (PRD §14)
+- Conflict resolver: multi-family-member vote tracking + detection (PRD §13.3, §19.6)
+- All module responses routed through `personality.formatMessage()`
+- Morning briefing uses departure pattern adjustment + food preference bias
+- Dining re-ranked by casual/upscale preference
+- Activity state machine uses pace-pattern buffer for expected remaining time
 
 ---
 

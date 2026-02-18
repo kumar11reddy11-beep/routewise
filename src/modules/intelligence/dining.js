@@ -2,6 +2,7 @@
 
 const routeSearch = require('./routeSearch');
 const logger      = require('../../utils/logger');
+const patterns    = require('../patterns');
 
 /**
  * RouteWise Dining Intelligence (PRD Section 8.2)
@@ -78,9 +79,10 @@ function isTight(scheduleContext = {}) {
  * @param {number} nextDestLon
  * @param {{ driftMinutes?: number, hoursUntilNextHardCommitment?: number }} scheduleContext
  * @param {number} [detourBudget=20]    - Max detour in minutes (can be overridden by user)
+ * @param {object} [tripState=null]     - Optional trip state for pattern-based ranking (M5)
  * @returns {Promise<string>}           Formatted message
  */
-async function findDining(query, currentLat, currentLon, nextDestLat, nextDestLon, scheduleContext = {}, detourBudget = 20) {
+async function findDining(query, currentLat, currentLon, nextDestLat, nextDestLon, scheduleContext = {}, detourBudget = 20, tripState = null) {
   logger.info(`Dining search: "${query}" detour=${detourBudget}min`);
 
   let results = [];
@@ -101,8 +103,18 @@ async function findDining(query, currentLat, currentLon, nextDestLat, nextDestLo
     return `🍽️ No dining options found within a ${detourBudget}-min detour on your route. Try a longer detour budget or different search terms.`;
   }
 
+  // M5: Re-rank results based on food preference bias (PRD Section 10)
+  let rankedResults = results;
+  if (tripState) {
+    const bias = patterns.getFoodBias(tripState);
+    if (bias !== 'neutral') {
+      rankedResults = applyFoodBiasRanking(results, bias);
+      logger.info(`Dining: re-ranked by food bias "${bias}"`);
+    }
+  }
+
   // Cap at 3 options
-  const options = results.slice(0, 3);
+  const options = rankedResults.slice(0, 3);
   const tight   = isTight(scheduleContext);
 
   // Build header
@@ -151,4 +163,50 @@ function detectFoodEmoji(query = '') {
   return '🍽️';
 }
 
-module.exports = { findDining, isTight, scheduleTradeoff, describeDetour };
+/**
+ * Re-rank dining results based on the family's learned food preference.
+ *
+ * 'casual'  → boost options with lower price levels or casual-sounding names.
+ * 'upscale' → boost options with higher price levels or upscale-sounding names.
+ *
+ * @param {object[]} results  - Array of dining result objects
+ * @param {'casual'|'upscale'} bias
+ * @returns {object[]}  Sorted results
+ */
+function applyFoodBiasRanking(results, bias) {
+  return [...results].sort((a, b) => {
+    const scoreA = diningBiasScore(a, bias);
+    const scoreB = diningBiasScore(b, bias);
+    // Higher score = better match for the bias → sort descending
+    return scoreB - scoreA;
+  });
+}
+
+/**
+ * Compute a bias-alignment score for a dining option.
+ * @param {object} option
+ * @param {'casual'|'upscale'} bias
+ * @returns {number}
+ */
+function diningBiasScore(option, bias) {
+  const priceLevel = option.priceLevel ?? 2; // default middle
+  const name       = (option.name || '').toLowerCase();
+
+  if (bias === 'casual') {
+    // Prefer lower price levels and casual keywords
+    let score = (4 - priceLevel); // 0–4 inverted → 4 best for price level 0
+    if (/diner|deli|cafe|taco|burger|pizza|fast|grill|bbq/.test(name)) score += 2;
+    return score;
+  }
+
+  if (bias === 'upscale') {
+    // Prefer higher price levels and upscale keywords
+    let score = priceLevel; // 4 = best
+    if (/bistro|steakhouse|prime|fine|chef|reserve|vineyard|rooftop/.test(name)) score += 2;
+    return score;
+  }
+
+  return 0;
+}
+
+module.exports = { findDining, isTight, scheduleTradeoff, describeDetour, applyFoodBiasRanking };

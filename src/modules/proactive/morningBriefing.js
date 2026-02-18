@@ -2,6 +2,7 @@
 
 const logger        = require('../../utils/logger');
 const { distanceMeters } = require('../../utils/geo');
+const patterns      = require('../patterns');
 
 /**
  * RouteWise Morning Briefing (PRD Section 11.1)
@@ -211,7 +212,18 @@ function generateBriefing(
 
   // ── Suggested departure ────────────────────────────────────────────────────
   const firstScheduled = activities.find(a => a.scheduledTime);
-  const departure      = calcDepartureTime(firstScheduled, driveMinutesToFirst);
+  let departure        = calcDepartureTime(firstScheduled, driveMinutesToFirst);
+
+  // M5: Apply departure pattern adjustment (PRD Section 10)
+  // If the family is consistently late, we suggest leaving earlier.
+  if (departure && !isNaN(departure.getTime()) && tripState) {
+    const adjusted = patterns.applyDepartureAdjustment(departure, tripState);
+    if (adjusted.getTime() !== departure.getTime()) {
+      const diffMin = Math.round((departure.getTime() - adjusted.getTime()) / 60000);
+      logger.info(`Morning briefing: departure adjusted earlier by ${diffMin} min (pattern learning)`);
+      departure = adjusted;
+    }
+  }
 
   if (departure && !isNaN(departure.getTime())) {
     lines.push(`🚀 Suggested departure: ${fmtTime(departure)}`);
@@ -222,6 +234,16 @@ function generateBriefing(
     }
   } else {
     lines.push("🚀 Set a departure time once you've confirmed today's first stop.");
+  }
+
+  // M5: Food preference — flavour breakfast suggestion
+  if (tripState) {
+    const foodBias = patterns.getFoodBias(tripState);
+    if (foodBias === 'casual') {
+      lines.push('\n☕ Based on your preferences: grabbing coffee and a quick bite on the road today?');
+    } else if (foodBias === 'upscale') {
+      lines.push('\n☕ Based on your preferences: a sit-down breakfast might be a nice start today.');
+    }
   }
 
   return lines.join('\n');

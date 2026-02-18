@@ -2,11 +2,14 @@
 
 require('dotenv').config();
 
-const intake          = require('./modules/intake');
-const tracking        = require('./modules/tracking');
-const intelligence    = require('./modules/intelligence');
-const budgetTracker   = require('./modules/proactive/budgetTracker');
-const logger          = require('./utils/logger');
+const intake            = require('./modules/intake');
+const tracking          = require('./modules/tracking');
+const intelligence      = require('./modules/intelligence');
+const budgetTracker     = require('./modules/proactive/budgetTracker');
+const patterns          = require('./modules/patterns');
+const personality       = require('./modules/patterns/personality');
+const conflictResolver  = require('./modules/patterns/conflictResolver');
+const logger            = require('./utils/logger');
 
 /**
  * RouteWise Main Message Router
@@ -28,6 +31,12 @@ const logger          = require('./utils/logger');
  *  11. Trip briefing → handleTripBriefing (M1)
  *  12. General query → handleQuery (M1)
  *  13. Default → help message
+ *
+ * M5 additions:
+ *  - All module responses are passed through personality.formatMessage()
+ *  - Location updates feed departure/arrival events into patterns.observe()
+ *  - Conflict detection: if a requestId is active and a second member
+ *    responds differently, conflictResolver detects it and Dona waits.
  */
 
 const INTENT_PATTERNS = {
@@ -94,16 +103,50 @@ function extractWeatherLocation(text) {
  * @param {string}   [params.text]        - Message text
  * @param {object[]} [params.attachments] - Array of attachment objects { filePath, mimeType, description }
  * @param {object}   [params.location]    - GPS location object { lat, lon, timestamp? } from Telegram live location
+ * @param {string}   [params.familyMember]- Identifier for who sent the message (for conflict tracking)
+ * @param {string}   [params.requestId]  - Active request ID (for conflict detection)
  * @returns {Promise<string>} Response to send back to the user
  */
-async function handleMessage({ text = '', attachments = [], location = null } = {}) {
+async function handleMessage({ text = '', attachments = [], location = null, familyMember = null, requestId = null } = {}) {
   logger.info('Routing message:', text.slice(0, 80).replace(/\n/g, ' '));
+
+  // ── M5: Conflict detection ─────────────────────────────────────────────────
+  // If a requestId is active and a family member is replying, track their
+  // choice and detect conflicts before routing the message.
+  if (requestId && familyMember && text) {
+    conflictResolver.trackResponse(requestId, familyMember, text.trim());
+    if (conflictResolver.hasConflict(requestId)) {
+      // Two or more members disagree — surface the conflict message and wait.
+      logger.info(`Conflict detected for request "${requestId}"`);
+      return conflictResolver.getConflictMessage(requestId);
+    }
+  }
 
   try {
     // ── 1. Live location (GPS tick from Telegram) ─────────────────────────────
     if (location && location.lat != null && location.lon != null) {
       const ts = location.timestamp || new Date().toISOString();
       const result = await tracking.handleLocationUpdate(location.lat, location.lon, ts);
+
+      // M5: feed departure / arrival events into the pattern learner
+      const { load: loadState, save: saveState } = require('./memory/tripState');
+      const state = loadState();
+
+      for (const evt of (result.events || [])) {
+        if (evt.type === 'stateChange' && evt.to === 'completed') {
+          // Activity completed → potential departure event (family left)
+          patterns.observe({
+            type: 'activityPace',
+            value: {
+              activityId:  evt.activityId || evt.activityName,
+              planned:     null, // actual durations tracked by stateMachine
+              actual:      null,
+            },
+          }, state);
+        }
+      }
+
+      saveState(state);
 
       const lines = [`📍 Location updated (${location.lat.toFixed(4)}, ${location.lon.toFixed(4)})`];
 
@@ -120,17 +163,19 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
         lines.push(`⏰ Reminder: ${req.text}`);
       }
 
-      return lines.join('\n');
+      // Location updates are factual/short — pass through personality filter
+      return personality.formatMessage(lines.join('\n'));
     }
 
     // ── 2. Attachment → store document ────────────────────────────────────────
     if (attachments && attachments.length > 0) {
       const att = attachments[0];
-      return await intake.handleDocument(
+      const docResp = await intake.handleDocument(
         att.filePath,
         att.mimeType || 'application/octet-stream',
         att.description || text || 'Uploaded document'
       );
+      return personality.formatMessage(docResp);
     }
 
     // ── 3. ETA / distance query ───────────────────────────────────────────────
@@ -164,7 +209,7 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
         ? result.arrivalTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
         : result.arrivalTime;
 
-      return `🗺️ ETA to ${result.destination}:\n⏱ ${result.durationText} (${result.distanceText})\n🕐 Arrive ~${arrivalStr}`;
+      return personality.formatMessage(`🗺️ ETA to ${result.destination}:\n⏱ ${result.durationText} (${result.distanceText})\n🕐 Arrive ~${arrivalStr}`);
     }
 
     // ── 4. Weather query ──────────────────────────────────────────────────────
@@ -176,7 +221,10 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
 
       try {
         const w = await tracking.getWeatherForLocation(place);
-        return `🌤 Weather at ${place}:\n${w.condition}, ${w.tempF}°F (${w.tempC.toFixed(0)}°C)\n💧 Humidity: ${w.humidity}% | 💨 Wind: ${w.windMph} mph`;
+        return personality.formatMessage(
+          `🌤 Weather at ${place}:\n${w.condition}, ${w.tempF}°F (${w.tempC.toFixed(0)}°C)\n` +
+          `💧 Humidity: ${w.humidity}% | 💨 Wind: ${w.windMph} mph`
+        );
       } catch (err) {
         return `❌ Couldn't get weather for "${place}": ${err.message}`;
       }
@@ -191,7 +239,10 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
 
       try {
         const info = await tracking.getSunsetInfo(loc.lat, loc.lon, new Date());
-        return `🌅 Today's sun info:\n🌄 Sunrise: ${info.sunrise}\n🌇 Sunset: ${info.sunset}\n📷 Golden hour: ${info.goldenHourStart} – ${info.goldenHourEnd}`;
+        return personality.formatMessage(
+          `🌅 Today's sun info:\n🌄 Sunrise: ${info.sunrise}\n🌇 Sunset: ${info.sunset}\n` +
+          `📷 Golden hour: ${info.goldenHourStart} – ${info.goldenHourEnd}`
+        );
       } catch (err) {
         return `❌ Couldn't fetch sunset info: ${err.message}`;
       }
@@ -213,7 +264,7 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
     if (INTENT_PATTERNS.budgetStatus.test(text)) {
       const { load } = require('./memory/tripState');
       const state = load();
-      return budgetTracker.generateBudgetSummary(state);
+      return personality.formatMessage(budgetTracker.generateBudgetSummary(state));
     }
 
     // ── 8. M4 Budget: log expense ("spent $X on category") ───────────────────
@@ -236,7 +287,9 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
           : '';
 
         const cat = budgetTracker.normaliseCategory(category);
-        return `✅ Logged $${amount.toFixed(2)} on ${cat}.${budgetNote}\n\n${budgetTracker.generateBudgetSummary(updatedState)}`;
+        return personality.formatMessage(
+          `✅ Logged $${amount.toFixed(2)} on ${cat}.${budgetNote}\n\n${budgetTracker.generateBudgetSummary(updatedState)}`
+        );
       }
     }
 
@@ -269,24 +322,24 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
       );
 
       if (m3Response !== null) {
-        return m3Response;
+        return personality.formatMessage(m3Response);
       }
       // Fall through to M1/M2 if intelligence couldn't handle it
     }
 
     // ── 10. Email check ───────────────────────────────────────────────────────
     if (INTENT_PATTERNS.emailCheck.test(text)) {
-      return await intake.handleEmailCheck();
+      return personality.formatMessage(await intake.handleEmailCheck());
     }
 
     // ── 11. Trip briefing — multi-line plan starting with "Day 1" ────────────
     if (INTENT_PATTERNS.tripBriefing.test(text)) {
-      return await intake.handleTripBriefing(text);
+      return personality.formatMessage(await intake.handleTripBriefing(text));
     }
 
     // ── 12. Query about stored trip data ──────────────────────────────────────
     if (INTENT_PATTERNS.query.test(text)) {
-      return await intake.handleQuery(text);
+      return personality.formatMessage(await intake.handleQuery(text));
     }
 
     // ── 13. Default: help message ─────────────────────────────────────────────

@@ -3,6 +3,14 @@
 const { distanceMeters } = require('../../utils/geo');
 const logger = require('../../utils/logger');
 
+// Lazy-load patterns to avoid circular-require issues
+// (stateMachine ← tracking ← patterns and patterns can observe tracking events)
+let _patterns = null;
+function getPatterns() {
+  if (!_patterns) _patterns = require('../patterns');
+  return _patterns;
+}
+
 /**
  * RouteWise Activity State Machine
  *
@@ -151,4 +159,37 @@ function updateActivityStates(lat, lon, timestamp, itinerary) {
   return { itinerary: updatedItinerary, events };
 }
 
-module.exports = { getActivityState, updateActivityStates };
+/**
+ * Calculate the expected remaining time at an activity, factoring in
+ * the family's historical pace pattern for the activity type.
+ *
+ * Used by the heartbeat / ETA modules to avoid underestimating how
+ * long the family will spend at activities they historically linger at.
+ *
+ * @param {object}      activity      - Activity object with { plannedDuration, name, id }
+ * @param {number}      minutesSpent  - Minutes already spent at the activity
+ * @param {object|null} tripState     - Trip state (used for pattern lookup)
+ * @returns {number} Expected remaining minutes (≥ 0)
+ */
+function getExpectedRemainingTime(activity, minutesSpent, tripState = null) {
+  const planned = activity?.plannedDuration || 60; // default 1 hour
+
+  // M5: Add pattern-based buffer for this activity type
+  let buffer = 0;
+  if (tripState) {
+    const activityType = (activity?.type || activity?.name || activity?.id || '').toLowerCase();
+    buffer = getPatterns().getActivityBuffer(activityType, tripState);
+    if (buffer > 0) {
+      logger.debug(
+        `stateMachine.getExpectedRemainingTime: adding ${buffer.toFixed(0)} min buffer ` +
+        `for activity type "${activityType}" (pattern learning)`
+      );
+    }
+  }
+
+  const totalExpected = planned + buffer;
+  const remaining     = Math.max(0, totalExpected - (minutesSpent || 0));
+  return remaining;
+}
+
+module.exports = { getActivityState, updateActivityStates, getExpectedRemainingTime };
