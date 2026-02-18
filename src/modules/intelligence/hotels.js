@@ -82,14 +82,16 @@ function positioningNote(minutesToActivity, bestMinutesToActivity) {
  * @param {object}  [budget={}]             - { budgetMin, budgetMax } per night in USD
  * @param {string}  [checkIn]               - YYYY-MM-DD (defaults to today)
  * @param {string}  [checkOut]              - YYYY-MM-DD (defaults to tomorrow)
+ * @param {string}  [budgetAwareness]       - 'over'|'on-track'|'under' from budgetTracker (M4)
  * @returns {Promise<string>}               Formatted message
  */
 async function findHotels(
   currentLat, currentLon,
   tomorrowActivityLat, tomorrowActivityLon,
   budget = {},
-  checkIn  = null,
-  checkOut = null
+  checkIn         = null,
+  checkOut        = null,
+  budgetAwareness = null
 ) {
   logger.info(`Hotel search near (${currentLat},${currentLon}), tomorrow activity at (${tomorrowActivityLat},${tomorrowActivityLon})`);
 
@@ -123,8 +125,31 @@ async function findHotels(
     return `🏨 No hotels found${budgetNote} near your current location. Try expanding the budget or searching a different area.`;
   }
 
+  // ── M4 Budget-awareness filtering (PRD §9.3) ─────────────────────────────
+  // Over budget → only show options under the budget max
+  // Under budget → include one upgrade option (sorted by price desc) if available
+  let filteredHotels = hotels;
+
+  if (budgetAwareness === 'over' && budget.budgetMax) {
+    const affordable = hotels.filter(h => !h.pricePerNight || h.pricePerNight <= budget.budgetMax);
+    if (affordable.length > 0) {
+      filteredHotels = affordable;
+      logger.info(`Budget-over mode: filtered to ${filteredHotels.length} affordable options`);
+    }
+  } else if (budgetAwareness === 'under' && budget.budgetMax) {
+    // Keep normal options; append one upgrade if there's a pricier option above budgetMax
+    const upgrade = hotels.find(h => h.pricePerNight && h.pricePerNight > budget.budgetMax);
+    if (upgrade) {
+      // Mark the upgrade option so we can annotate it
+      upgrade._upgradeOption = true;
+      const base = hotels.filter(h => !h._upgradeOption).slice(0, 2);
+      filteredHotels = [...base, upgrade];
+      logger.info('Budget-under mode: added one upgrade option');
+    }
+  }
+
   // Cap at 3 options
-  const options = hotels.slice(0, 3);
+  const options = filteredHotels.slice(0, 3);
 
   // Calculate drive times: current→hotel and hotel→tomorrow's activity
   const driveTimes = await Promise.all(options.map(async h => {
@@ -146,18 +171,20 @@ async function findHotels(
   const lines = ['🏨 Hotel options for tonight:\n'];
 
   options.forEach((h, i) => {
-    const stars   = h.stars ? '★'.repeat(Math.round(h.stars)) : '';
-    const rating  = h.rating ? `${h.rating}/10` : '';
-    const price   = h.pricePerNight ? `$${Math.round(h.pricePerNight)}/night` : 'Price TBD';
-    const dt      = driveTimes[i];
-    const tonight = dt.toHotel != null ? formatDriveTime(dt.toHotel) + ' to get there' : '';
-    const posNote = positioningNote(dt.toActivity, bestActivityTime);
-    const bookUrl = h.bookingLink || 'booking.com';
+    const stars       = h.stars ? '★'.repeat(Math.round(h.stars)) : '';
+    const rating      = h.rating ? `${h.rating}/10` : '';
+    const price       = h.pricePerNight ? `$${Math.round(h.pricePerNight)}/night` : 'Price TBD';
+    const dt          = driveTimes[i];
+    const tonight     = dt.toHotel != null ? formatDriveTime(dt.toHotel) + ' to get there' : '';
+    const posNote     = positioningNote(dt.toActivity, bestActivityTime);
+    const bookUrl     = h.bookingLink || 'booking.com';
+    const upgradeNote = h._upgradeOption ? "💎 Upgrade — you've got budget room for this one" : '';
 
     lines.push(`${i + 1}. ${h.name}${stars ? ' ' + stars : ''}`);
     lines.push(`   ${price}${rating ? ' — ' + rating : ''}`);
-    if (tonight)  lines.push(`   🚗 ${tonight}`);
-    if (posNote)  lines.push(`   ${posNote}`);
+    if (upgradeNote) lines.push(`   ${upgradeNote}`);
+    if (tonight)     lines.push(`   🚗 ${tonight}`);
+    if (posNote)     lines.push(`   ${posNote}`);
     if (h.lat && h.lon) {
       const mapsLink = `https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}`;
       lines.push(`   📍 ${mapsLink}`);

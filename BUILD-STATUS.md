@@ -246,6 +246,145 @@ All M3 functions work with the keys already in `.env`. No new keys required for 
 
 ---
 
-## Next: Milestone 4
+## Next: Milestone 5
 
-Proactive Alerts & Daily Rituals — heartbeat engine (15-min cron), alert triggers (drift, weather, 5PM hotel, flight delay), morning briefing at 6 AM, end-of-day recap, budget tracking.
+Pattern Learning, Personality & End-to-End Dry Run.
+
+---
+
+---
+
+# Milestone 4 — Proactive Alerts & Daily Rituals
+
+**Built:** 2026-02-18
+**Node version:** v22.22.0
+
+---
+
+## Test Results
+
+```
+# tests 13
+# suites 0
+# pass 13
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms ~195ms
+```
+
+### All 13 tests passing ✅
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | runHeartbeat → `{ mode: 'autopilot', message: null }` when on track | ✅ PASS |
+| 2 | runHeartbeat → alert message when 40+ min schedule drift detected | ✅ PASS |
+| 3 | weatherAlert → correct message for rain at outdoor activity | ✅ PASS |
+| 4 | hotelNudge → fires after 5PM with no hotel booked | ✅ PASS |
+| 5 | hotelNudge → does NOT fire before 5PM | ✅ PASS |
+| 6 | generateBriefing → activities, weather section, departure time suggestion | ✅ PASS |
+| 7 | generateBriefing → wardrobe nudge when temp < 55°F | ✅ PASS |
+| 8 | shouldSendLateStartFollowUp → true when GPS at hotel 30+ min past departure | ✅ PASS |
+| 9 | detectHotelArrival → true when within 500m after 5PM | ✅ PASS |
+| 10 | generateRecap → driving time, completed/skipped activities, budget summary | ✅ PASS |
+| 11 | logExpense → correctly adds to category and updates total | ✅ PASS |
+| 12 | getBudgetStatus → correct percentUsed and isOverBudget flag | ✅ PASS |
+| 13 | noRepeatGuard → true (suppress) < 30 min, false > 30 min ago | ✅ PASS |
+
+All prior milestone tests (M1: 8, M2: 10+, M3: 23) remain green.
+
+---
+
+## What Was Built
+
+### Files Created
+
+```
+src/modules/proactive/
+├── alerts.js          ← Alert generation (PRD §6.2)
+│                         scheduleAlert, weatherAlert, hotelNudge,
+│                         flightDelayAlert, noRepeatGuard
+├── budgetTracker.js   ← Budget tracking (PRD §9)
+│                         logExpense, getBudgetStatus, generateBudgetSummary,
+│                         getBudgetAwareness, endOfDayBudgetPrompt,
+│                         normaliseCategory (with synonym mapping)
+├── morningBriefing.js ← Morning briefing (PRD §11.1)
+│                         generateBriefing, shouldSendLateStartFollowUp,
+│                         calcDepartureTime, getTodaysActivities
+├── endOfDay.js        ← End-of-day recap (PRD §11.2)
+│                         generateRecap, detectHotelArrival,
+│                         getTodaysActivities, getTomorrowFirstActivity
+└── index.js           ← Heartbeat orchestrator (PRD §7.1)
+                          runHeartbeat, checkAlertConditions, sendAlert
+
+tests/m4/
+└── proactive.test.js  ← 13 tests, all passing (node:test, all mocked)
+```
+
+### Files Updated
+
+```
+src/index.js
+  ├── Added budgetTracker import (M4)
+  ├── Added budget routing step 7: "how much.*spent" → getBudgetStatus
+  ├── Added budget routing step 8: "spent $X on [category]" → logExpense
+  └── Passes getBudgetAwareness() to M3 intelligence calls (enrichedState)
+
+src/modules/intelligence/hotels.js
+  ├── Added budgetAwareness parameter to findHotels()
+  ├── Over budget → filters to only affordable options (< budgetMax)
+  ├── Under budget → appends one upgrade option above budget range
+  └── Upgrade options annotated with 💎 "You've got budget room" note
+```
+
+### Architecture Notes
+
+**Heartbeat engine** (`proactive/index.js`):
+- `runHeartbeat(tripStateObj, lat, lon, ts)` — accepts injected tripState for testability
+- In-memory `alertLastSent` map tracks per-type last-send timestamp for noRepeatGuard
+- Steps: state machine → ETAs → weather check → alert conditions → 5PM hotel → deferred requests
+- Returns `{ mode, message, alerts[] }` — caller (OpenClaw layer) handles Telegram delivery
+- `sendAlert()` is a stub; real delivery handled by the OpenClaw heartbeat cron
+
+**Alert generation** (`alerts.js`):
+- All functions return formatted strings (no side effects, pure generators)
+- noRepeatGuard accepts Date, number (ms), or ISO string — normalises before comparison
+- 30-minute suppression window (PRD §14.1: "proactive, not naggy")
+
+**Budget tracker** (`budgetTracker.js`):
+- `normaliseCategory()` handles 15+ synonyms: 'dinner'→food, 'fuel'→gas, 'lodge'→hotels, etc.
+- `getBudgetAwareness()` returns 'over'/'on-track'/'under' based on percentUsed thresholds
+  - over: >100% or isOverBudget
+  - under: ≤60% spent
+  - on-track: 61–99%
+- Expenses logged with category, amount, note, and ISO timestamp
+
+**Morning briefing** (`morningBriefing.js`):
+- `shouldSendLateStartFollowUp` uses Haversine distance (≤500m) + time threshold (≥30 min past departure)
+- Wardrobe nudge: < 55°F → 🧥 "pack layers"; > 85°F → ☀️ "stay hydrated"
+- Departure time = first scheduled activity time − driveMinutes − 15-min buffer
+
+**End-of-day recap** (`endOfDay.js`):
+- `detectHotelArrival()` requires GPS within 500m AND currentHour ≥ 17 (5 PM)
+- Uses Haversine from `utils/geo.js` for accurate great-circle distance
+- Tomorrow preview includes suggested departure (first activity time − drive − 15 min buffer)
+
+---
+
+## M4 Completion Checklist
+
+- [x] Heartbeat orchestrator (runHeartbeat, 15-min cycle, PRD §7.1)
+- [x] Alert triggers: schedule drift (40+ min), weather (rain/adverse), hotel nudge (5PM), flight delay
+- [x] noRepeatGuard — 30-min suppression window, prevents naggy repeats
+- [x] Morning briefing: activities, weather, wardrobe nudge, sunset, hard commitments, open slots, departure time
+- [x] Late-start follow-up: GPS at hotel 30+ min past departure
+- [x] End-of-day recap: driving time, activities done/skipped, budget, tomorrow preview
+- [x] Hotel arrival detection (Haversine ≤500m, after 5PM)
+- [x] Budget tracking: logExpense, getBudgetStatus, generateBudgetSummary, getBudgetAwareness
+- [x] Budget-aware hotel suggestions: over→filter affordable, under→add upgrade option
+- [x] Budget routing in src/index.js (status query + log expense)
+- [x] All 13 M4 tests passing
+- [x] No hardcoded API keys
+- [x] CommonJS style, same logger as M1–M3
+- [x] All prior tests (M1+M2+M3: 41 total) remain green

@@ -2,10 +2,11 @@
 
 require('dotenv').config();
 
-const intake        = require('./modules/intake');
-const tracking      = require('./modules/tracking');
-const intelligence  = require('./modules/intelligence');
-const logger        = require('./utils/logger');
+const intake          = require('./modules/intake');
+const tracking        = require('./modules/tracking');
+const intelligence    = require('./modules/intelligence');
+const budgetTracker   = require('./modules/proactive/budgetTracker');
+const logger          = require('./utils/logger');
 
 /**
  * RouteWise Main Message Router
@@ -20,11 +21,13 @@ const logger        = require('./utils/logger');
  *   4. Weather query → getWeatherForLocation (M2)
  *   5. Sunset/golden hour query → getSunsetInfo (M2)
  *   6. Deferred request → handleDeferredRequest (M2)
- *   7. M3 on-demand intelligence (food/gas/hotel/hospital/flight)
- *   8. Email check trigger → handleEmailCheck (M1)
- *   9. Trip briefing → handleTripBriefing (M1)
- *  10. General query → handleQuery (M1)
- *  11. Default → help message
+ *   7. M4 Budget: status query → getBudgetStatus
+ *   8. M4 Budget: log expense → logExpense
+ *   9. M3 on-demand intelligence (food/gas/hotel/hospital/flight)
+ *  10. Email check trigger → handleEmailCheck (M1)
+ *  11. Trip briefing → handleTripBriefing (M1)
+ *  12. General query → handleQuery (M1)
+ *  13. Default → help message
  */
 
 const INTENT_PATTERNS = {
@@ -46,6 +49,10 @@ const INTENT_PATTERNS = {
   hotelIntent:   /hotel|place\s+to\s+stay|where.*sleep|accommodation|lodge|motel|room\s+for\s+tonight/i,
   hospitalIntent:/hospital|emergency|\bER\b|urgent\s+care|doctor|clinic|ambulance|hurt|injured/i,
   flightIntent:  /flight.*status|is.*flight.*delayed|check.*flight|flight\s+[A-Z]{2}\d/i,
+
+  // M4 budget tracking
+  budgetStatus:  /how\s+much.*spent|budget.*status|budget.*check|spending.*today|trip.*budget/i,
+  budgetLog:     /(?:spent|paid)\s+\$?(\d+(?:\.\d+)?)\s+(?:on|for)\s+(\w+)/i,
 };
 
 /**
@@ -202,7 +209,38 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
       }
     }
 
-    // ── 7. M3 On-Demand Intelligence ─────────────────────────────────────────
+    // ── 7. M4 Budget: status query ────────────────────────────────────────────
+    if (INTENT_PATTERNS.budgetStatus.test(text)) {
+      const { load } = require('./memory/tripState');
+      const state = load();
+      return budgetTracker.generateBudgetSummary(state);
+    }
+
+    // ── 8. M4 Budget: log expense ("spent $X on category") ───────────────────
+    if (INTENT_PATTERNS.budgetLog.test(text)) {
+      const match = text.match(/(?:spent|paid)\s+\$?(\d+(?:\.\d+)?)\s+(?:on|for)\s+(\w+)/i);
+      if (match) {
+        const amount   = parseFloat(match[1]);
+        const category = match[2];
+        const { load, save } = require('./memory/tripState');
+        const state = load();
+        const updatedState = budgetTracker.logExpense(state, category, amount, text);
+        save(updatedState);
+
+        // Budget-awareness context for next suggestion
+        const awareness = budgetTracker.getBudgetAwareness(updatedState);
+        const budgetNote = awareness === 'over'
+          ? " You're running over budget — I'll prioritise affordable options."
+          : awareness === 'under'
+          ? " You have budget room — I can suggest upgrades if you'd like."
+          : '';
+
+        const cat = budgetTracker.normaliseCategory(category);
+        return `✅ Logged $${amount.toFixed(2)} on ${cat}.${budgetNote}\n\n${budgetTracker.generateBudgetSummary(updatedState)}`;
+      }
+    }
+
+    // ── 9. M3 On-Demand Intelligence ─────────────────────────────────────────
     //    Handles food, gas, hotel, hospital, flight status, and combined needs.
     //    Fires before M1 query handler so specific intents take priority.
     const isM3Intent = (
@@ -218,10 +256,14 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
       const { load } = require('./memory/tripState');
       const state = load();
 
+      // Pass budget awareness so hotel/dining suggestions can adjust
+      const budgetAwareness = budgetTracker.getBudgetAwareness(state);
+      const enrichedState   = { ...state, _budgetAwareness: budgetAwareness };
+
       // intelligence.handleRequest returns null if it can't handle the text
       const m3Response = await intelligence.handleRequest(
         text,
-        state,
+        enrichedState,
         loc.lat || null,
         loc.lon || null
       );
@@ -232,22 +274,22 @@ async function handleMessage({ text = '', attachments = [], location = null } = 
       // Fall through to M1/M2 if intelligence couldn't handle it
     }
 
-    // ── 8. Email check ────────────────────────────────────────────────────────
+    // ── 10. Email check ───────────────────────────────────────────────────────
     if (INTENT_PATTERNS.emailCheck.test(text)) {
       return await intake.handleEmailCheck();
     }
 
-    // ── 9. Trip briefing — multi-line plan starting with "Day 1" ─────────────
+    // ── 11. Trip briefing — multi-line plan starting with "Day 1" ────────────
     if (INTENT_PATTERNS.tripBriefing.test(text)) {
       return await intake.handleTripBriefing(text);
     }
 
-    // ── 10. Query about stored trip data ──────────────────────────────────────
+    // ── 12. Query about stored trip data ──────────────────────────────────────
     if (INTENT_PATTERNS.query.test(text)) {
       return await intake.handleQuery(text);
     }
 
-    // ── 11. Default: help message ─────────────────────────────────────────────
+    // ── 13. Default: help message ─────────────────────────────────────────────
     return [
       "I didn't understand that. Here's what I can do:\n",
       '📍 **Share your live location** — I\'ll track activities automatically',
