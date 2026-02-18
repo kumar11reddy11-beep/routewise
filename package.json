@@ -1,0 +1,27 @@
+{
+  "name": "routewise",
+  "version": "0.1.0",
+  "description": "AI-powered road trip co-pilot built on OpenClaw/Dona",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test tests/m1/intake.test.js"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0",
+    "dotenv": "^16.4.5",
+    "axios": "^1.7.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "road-trip",
+    "travel",
+    "ai",
+    "openclaw",
+    "dona"
+  ],
+  "author": "RouteWise",
+  "license": "MIT"
+}

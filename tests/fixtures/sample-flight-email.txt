@@ -1,0 +1,58 @@
+From: no-reply@delta.com
+To: dona11.reddy11@gmail.com
+Subject: Your eTicket Itinerary and Receipt for Confirmation KLMPX7
+
+──────────────────────────────────────────
+  DELTA
+  Your trip is confirmed.
+──────────────────────────────────────────
+
+Confirmation: KLMPX7
+
+FLIGHT ITINERARY
+
+DEPARTING FLIGHT
+─────────────────
+Flight:       DL1842
+Route:        Portland (PDX) → San Francisco (SFO)
+Departure:    Friday, June 20, 2025 at 8:15 AM PDT
+Arrival:      Friday, June 20, 2025 at 10:32 AM PDT
+Duration:     2h 17m
+Class:        Main Cabin
+Seat:         14C (Window)
+
+RETURNING FLIGHT
+─────────────────
+Flight:       DL1255
+Route:        San Francisco (SFO) → Portland (PDX)
+Departure:    Friday, June 27, 2025 at 5:45 PM PDT
+Arrival:      Friday, June 27, 2025 at 7:58 PM PDT
+Duration:     2h 13m
+Class:        Main Cabin
+Seat:         22A (Window)
+
+PASSENGER INFORMATION
+─────────────────────
+Name: Adult Traveler
+eTicket number: 006-4817293045
+Frequent flyer: SkyMiles #8841923
+
+FARE SUMMARY
+─────────────
+Base fare:       $189.00
+Taxes & fees:     $47.50
+Total charged:   $236.50 USD
+
+Payment: Visa ending in 4231
+
+IMPORTANT TRAVEL INFORMATION
+─────────────────────────────
+• Check in online at delta.com starting 24 hours before departure
+• Arrive at airport at least 2 hours before domestic flight
+• Carry-on: 1 personal item + 1 carry-on bag included
+• Checked bag fee: $35/bag (first), $45/bag (second)
+
+For flight status and updates: delta.com or Delta mobile app
+
+──────────────────────────────────────────
+Delta Air Lines | P.O. Box 20706, Atlanta, GA 30320
